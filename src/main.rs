@@ -51,7 +51,11 @@ Assentamentos e territórios tradicionais aparecem como small mesmo quando grand
 `municipio`.
 - Qualidade: `overlap_share` é a parcela da área do imóvel sobreposta a outros imóveis do estado; \
 `outside_share`, a parcela fora do município declarado. Sobreposição não é sinônimo de disputa: \
-inclui imóvel declarado duas vezes e lote dentro de assentamento.";
+inclui imóvel declarado duas vezes e lote dentro de assentamento.
+- Áreas protegidas: `indigenous_share` é a parcela do imóvel dentro de terras indígenas (Funai); \
+`strict_protection_share` e `sustainable_use_share`, dentro de unidades de conservação de proteção \
+integral e de uso sustentável (CNUC/MMA). Uso sustentável não é irregularidade: áreas de proteção \
+ambiental (APA) e reservas particulares (RPPN) admitem imóveis privados.";
 
 /// Etapa da análise a partir do texto do Sicar (mesma regra dos pacotes e da página).
 const STAGE: &str = "CASE WHEN condition LIKE 'Cancelado%' THEN 'cancelled' \
@@ -194,7 +198,7 @@ impl Data {
                 other => format!("'{}/{other}/state={uf}.parquet'", self.base),
             })
             .collect();
-        format!("read_parquet([{}])", list.join(", "))
+        format!("read_parquet([{}], union_by_name = true)", list.join(", "))
     }
 
     /// Toda resposta leva a data da publicação e a citação.
@@ -230,6 +234,67 @@ fn valid_code(code: &str) -> bool {
 
 fn sql_text(text: &str) -> String {
     format!("'{}'", text.replace('\'', "''"))
+}
+
+/// Indicadores que `with_quality` acrescenta a cada imóvel.
+const QUALITY_KEYS: [&str; 9] = [
+    "overlap_count",
+    "overlap_share",
+    "outside_share",
+    "indigenous_share",
+    "strict_protection_share",
+    "sustainable_use_share",
+    "indigenous_land",
+    "conservation_unit",
+    "conservation_category",
+];
+
+/// "toda a área" ou "NN% da área".
+fn percent(share: f64) -> String {
+    if share >= 0.995 {
+        "toda a área".into()
+    } else {
+        format!("{}% da área", ((100.0 * share).round() as i64).max(1))
+    }
+}
+
+/// Acrescenta à triagem a sobreposição com terra indígena e unidade de conservação (mesma regra
+/// de `car_check()` nos pacotes): acima de 1% da área, terra indígena e proteção integral levam
+/// um "ok" a "attention"; uso sustentável só entra na nota.
+fn protected(row: &Value, check: &'static str, note: &str) -> (&'static str, String, Value) {
+    let share = |key: &str| row[key].as_f64().unwrap_or(0.0);
+    let name = |key: &str| row[key].as_str().unwrap_or("?").to_string();
+    let (ti, strict, sustainable) =
+        (share("indigenous_share"), share("strict_protection_share"), share("sustainable_use_share"));
+    let mut extra: Vec<String> = Vec::new();
+    let mut names: Vec<String> = Vec::new();
+    if ti >= 0.01 {
+        extra.push(format!("Sobrepõe terra indígena ({}) em {}.", name("indigenous_land"), percent(ti)));
+        names.push(name("indigenous_land"));
+    }
+    if strict >= 0.01 {
+        extra.push(format!(
+            "Sobrepõe unidade de conservação de proteção integral ({}) em {}.",
+            name("conservation_unit"),
+            percent(strict)
+        ));
+        names.push(name("conservation_unit"));
+    } else if sustainable >= 0.01 {
+        names.push(name("conservation_unit"));
+        if check != "blocked" {
+            extra.push(format!(
+                "Fica em unidade de conservação de uso sustentável ({}: {}), em {}.",
+                name("conservation_category"),
+                name("conservation_unit"),
+                percent(sustainable)
+            ));
+        }
+    }
+    let alert = (ti >= 0.01 || strict >= 0.01) && check == "ok";
+    let mut parts: Vec<String> = if alert { Vec::new() } else { vec![note.to_string()] };
+    parts.extend(extra);
+    let area = if names.is_empty() { Value::Null } else { json!(names.join("; ")) };
+    (if alert { "attention" } else { check }, parts.join(" "), area)
 }
 
 /// Resultado da triagem de um imóvel (mesma regra de `car_check()` nos pacotes).
@@ -379,8 +444,8 @@ impl Data {
         ]))
     }
 
-    /// Acrescenta `overlap_count`, `overlap_share` e `outside_share` a cada imóvel, quando a
-    /// publicação traz os indicadores.
+    /// Acrescenta os indicadores de qualidade (`QUALITY_KEYS`) a cada imóvel, quando a publicação
+    /// os traz.
     fn with_quality(&self, mut rows: Vec<Value>) -> Vec<Value> {
         let mut by_state: BTreeMap<String, (Vec<i64>, Vec<String>)> = BTreeMap::new();
         for row in &rows {
@@ -396,7 +461,7 @@ impl Data {
         for (uf, (towns, codes)) in by_state {
             let towns: Vec<String> = towns.iter().map(i64::to_string).collect();
             let found = self.rows(&format!(
-                "SELECT property_code, overlap_count, overlap_share, outside_share FROM {} \
+                "SELECT * EXCLUDE (municipality_code) FROM {} \
                  WHERE municipality_code IN ({}) AND property_code IN ({})",
                 self.files("quality", std::slice::from_ref(&uf)),
                 towns.join(", "),
@@ -410,7 +475,7 @@ impl Data {
         }
         for row in &mut rows {
             let q = row["property_code"].as_str().and_then(|code| quality.get(code));
-            for key in ["overlap_count", "overlap_share", "outside_share"] {
+            for key in QUALITY_KEYS {
                 row[key] = q.map(|q| q[key].clone()).unwrap_or(Value::Null);
             }
         }
@@ -496,17 +561,24 @@ impl Data {
                 }
             }
         }
+        let mut found: HashMap<String, Value> = self
+            .with_quality(found.into_values().collect())
+            .into_iter()
+            .filter_map(|row| row["property_code"].as_str().map(str::to_string).map(|code| (code, row)))
+            .collect();
         let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
         let rows: Vec<Value> = codes
             .iter()
             .map(|code| {
                 let (check, note, mut row) = if !valid_code(code) {
-                    ("invalid", "Texto fora do formato de um código do CAR.", json!({"property_code": code}))
-                } else if let Some(row) = found.remove(code) {
+                    ("invalid", "Texto fora do formato de um código do CAR.".to_string(), json!({"property_code": code}))
+                } else if let Some(mut row) = found.remove(code) {
                     let (check, note) = verdict(&row);
+                    let (check, note, area) = protected(&row, check, note);
+                    row["protected_area"] = area;
                     (check, note, row)
                 } else {
-                    ("not_found", "Código não encontrado nesta publicação.", json!({"property_code": code}))
+                    ("not_found", "Código não encontrado nesta publicação.".to_string(), json!({"property_code": code}))
                 };
                 *counts.entry(check).or_default() += 1;
                 row["check"] = json!(check);
@@ -602,9 +674,11 @@ impl Car {
 
     #[tool(
         description = "Verifica uma lista de códigos de imóvel do CAR (até 200). Para cada um, o que consta na \
-                       camada pública e um resultado: ok (ativo, sem notificação pendente), attention (pendente ou \
-                       notificado sem resposta), blocked (cancelado ou suspenso), not_found, invalid. A classificação \
-                       é do carbr, não uma regra oficial, e não cobre embargos nem sobreposição com áreas protegidas."
+                       camada pública e um resultado: ok (ativo, sem notificação pendente), attention (pendente, \
+                       notificado sem resposta, ou com mais de 1% da área sobre terra indígena ou unidade de \
+                       conservação de proteção integral), blocked (cancelado ou suspenso), not_found, invalid. \
+                       `note` traz o motivo e `protected_area`, os nomes das áreas sobrepostas. A classificação é do \
+                       carbr, não uma regra oficial, e não cobre embargos."
     )]
     async fn verificar_imoveis(&self, Parameters(p): Parameters<Codigos>) -> Result<CallToolResult, McpError> {
         self.run("verificar_imoveis", move |d| d.verificar(p)).await
