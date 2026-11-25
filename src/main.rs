@@ -55,7 +55,10 @@ inclui imóvel declarado duas vezes e lote dentro de assentamento.
 - Áreas protegidas: `indigenous_share` é a parcela do imóvel dentro de terras indígenas (Funai); \
 `strict_protection_share` e `sustainable_use_share`, dentro de unidades de conservação de proteção \
 integral e de uso sustentável (CNUC/MMA). Uso sustentável não é irregularidade: áreas de proteção \
-ambiental (APA) e reservas particulares (RPPN) admitem imóveis privados.";
+ambiental (APA) e reservas particulares (RPPN) admitem imóveis privados.
+- Tipologia (`tipologia`, em `municipio`): o grupo do município entre cinco, pelo perfil do cadastro \
+(porte dos imóveis, etapa da análise e sobreposição); `typology_label` é o nome do grupo e os \
+indicadores são parcelas de 0 a 1 (`coverage` é a área declarada sobre a área do município).";
 
 /// Etapa da análise a partir do texto do Sicar (mesma regra dos pacotes e da página).
 const STAGE: &str = "CASE WHEN condition LIKE 'Cancelado%' THEN 'cancelled' \
@@ -436,11 +439,22 @@ impl Data {
             .ok()
             .and_then(|rows| rows.into_iter().next())
             .unwrap_or(Value::Null);
+        // Grupo do município na tipologia; a falta dela não impede a resposta.
+        let typology = self
+            .rows(&format!(
+                "SELECT * EXCLUDE (state, municipality_code, municipality) \
+                 FROM read_parquet('{}/typology/municipalities.parquet') WHERE municipality_code = {code}",
+                self.base
+            ))
+            .ok()
+            .and_then(|rows| rows.into_iter().next())
+            .unwrap_or(Value::Null);
         self.envelope(fields(vec![
             ("encontrado", json!(true)),
             ("municipio", town),
             ("etapas", json!(stages)),
             ("qualidade", quality),
+            ("tipologia", typology),
         ]))
     }
 
