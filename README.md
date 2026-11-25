@@ -75,6 +75,12 @@ mkdir -p ~/.config/systemd/user && cp deploy/carbr-mcp.service ~/.config/systemd
 systemctl --user daemon-reload && systemctl --user enable --now carbr-mcp
 ```
 
+O site e o certificado precisam de `sudo`; `deploy/publicar-site.sh` faz os dois e pode ser repetido:
+
+```bash
+ssh -tt cast 'bash ~/carbr-mcp/deploy/publicar-site.sh'
+```
+
 ## Sobre os dados
 
 Fonte: Sicar, Serviço Florestal Brasileiro. O cadastro é autodeclarado: há sobreposições, e constar
