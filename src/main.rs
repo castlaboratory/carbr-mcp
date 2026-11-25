@@ -48,7 +48,10 @@ done = análise concluída; cancelled = cancelado.
 - Porte (`size_class`): small = até 4 módulos fiscais; medium = de 4 a 15; large = acima de 15. \
 Assentamentos e territórios tradicionais aparecem como small mesmo quando grandes.
 - Para totais do país ou de um estado, use `resumo` ou `etapas_da_analise`; para um município, \
-`municipio`.";
+`municipio`.
+- Qualidade: `overlap_share` é a parcela da área do imóvel sobreposta a outros imóveis do estado; \
+`outside_share`, a parcela fora do município declarado. Sobreposição não é sinônimo de disputa: \
+inclui imóvel declarado duas vezes e lote dentro de assentamento.";
 
 /// Etapa da análise a partir do texto do Sicar (mesma regra dos pacotes e da página).
 const STAGE: &str = "CASE WHEN condition LIKE 'Cancelado%' THEN 'cancelled' \
@@ -66,7 +69,7 @@ const LABEL: &str = "CASE etapa WHEN 'waiting' THEN 'Aguardando análise' \
 const DIMS: [&str; 6] = ["state", "status", "size_class", "property_type", "condition", "created_year"];
 const TOWN_ORDER: [&str; 6] =
     ["properties", "small_properties", "area_ha", "pending", "cancelled", "invalid_geometries"];
-const PROPERTY_FIELDS: &str = "property_code, municipality, state, status, condition, property_type, \
+const PROPERTY_FIELDS: &str = "property_code, municipality, municipality_code, state, status, condition, property_type, \
     size_class, round(area_ha, 2) AS area_ha, round(fiscal_modules, 2) AS fiscal_modules, \
     strftime(created_at, '%Y-%m-%d') AS created_at";
 
@@ -355,7 +358,63 @@ impl Data {
              FROM s ORDER BY properties DESC",
             self.files("properties", &states)
         ))?;
-        self.envelope(fields(vec![("encontrado", json!(true)), ("municipio", town), ("etapas", json!(stages))]))
+        // Indicadores de qualidade do município; a falta deles não impede a resposta.
+        let quality = self
+            .rows(&format!(
+                "SELECT * EXCLUDE (state, municipality_code), \
+                        round(100.0 * overlapping / properties, 1) AS percentual_com_sobreposicao, \
+                        round(100.0 * overlapping_half / properties, 1) AS percentual_com_mais_da_metade_sobreposta, \
+                        round(100.0 * outside_half / properties, 1) AS percentual_com_mais_da_metade_fora_do_municipio \
+                 FROM {} WHERE municipality_code = {code}",
+                self.files("quality-municipalities", &states)
+            ))
+            .ok()
+            .and_then(|rows| rows.into_iter().next())
+            .unwrap_or(Value::Null);
+        self.envelope(fields(vec![
+            ("encontrado", json!(true)),
+            ("municipio", town),
+            ("etapas", json!(stages)),
+            ("qualidade", quality),
+        ]))
+    }
+
+    /// Acrescenta `overlap_count`, `overlap_share` e `outside_share` a cada imóvel, quando a
+    /// publicação traz os indicadores.
+    fn with_quality(&self, mut rows: Vec<Value>) -> Vec<Value> {
+        let mut by_state: BTreeMap<String, (Vec<i64>, Vec<String>)> = BTreeMap::new();
+        for row in &rows {
+            if let (Some(uf), Some(town), Some(code)) =
+                (row["state"].as_str(), row["municipality_code"].as_i64(), row["property_code"].as_str())
+            {
+                let entry = by_state.entry(uf.to_string()).or_default();
+                entry.0.push(town);
+                entry.1.push(sql_text(code));
+            }
+        }
+        let mut quality: HashMap<String, Value> = HashMap::new();
+        for (uf, (towns, codes)) in by_state {
+            let towns: Vec<String> = towns.iter().map(i64::to_string).collect();
+            let found = self.rows(&format!(
+                "SELECT property_code, overlap_count, overlap_share, outside_share FROM {} \
+                 WHERE municipality_code IN ({}) AND property_code IN ({})",
+                self.files("quality", std::slice::from_ref(&uf)),
+                towns.join(", "),
+                codes.join(", ")
+            ));
+            for q in found.unwrap_or_default() {
+                if let Some(code) = q["property_code"].as_str() {
+                    quality.insert(code.to_string(), q);
+                }
+            }
+        }
+        for row in &mut rows {
+            let q = row["property_code"].as_str().and_then(|code| quality.get(code));
+            for key in ["overlap_count", "overlap_share", "outside_share"] {
+                row[key] = q.map(|q| q[key].clone()).unwrap_or(Value::Null);
+            }
+        }
+        rows
     }
 
     fn ponto(&self, p: Ponto) -> anyhow::Result<Value> {
@@ -380,6 +439,7 @@ impl Data {
                 self.files("properties", &states)
             ))?
         };
+        let rows = self.with_quality(rows);
         let n = rows.len();
         self.envelope(fields(vec![
             ("imoveis", json!(rows)),
