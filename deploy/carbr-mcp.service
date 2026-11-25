@@ -1,0 +1,14 @@
+[Unit]
+Description=Servidor MCP do CAR (carbr-mcp)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+ExecStart=%h/carbr-mcp/target/release/carbr-mcp
+Environment=BIND=127.0.0.1:8765
+Environment=HOSTS=mcp.castlab.org,localhost,127.0.0.1
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
