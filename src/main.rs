@@ -58,6 +58,8 @@ integral e de uso sustentável (CNUC/MMA). Uso sustentável não é irregularida
 ambiental (APA) e reservas particulares (RPPN) admitem imóveis privados.
 - Embargos: `embargo_count` é o número de embargos ambientais ativos do Ibama que alcançam o imóvel e \
 `embargo_share`, a parcela da área embargada. Só Ibama; não há embargos estaduais.
+- Florestas públicas: `public_forest_share` é a parcela do imóvel dentro de florestas públicas não \
+destinadas (tipo B), pelo Cadastro Nacional de Florestas Públicas, do Serviço Florestal.
 - Tipologia (`tipologia`, em `municipio`): o grupo do município entre cinco, pelo perfil do cadastro \
 (porte dos imóveis, etapa da análise e sobreposição); `typology_label` é o nome do grupo e os \
 indicadores são parcelas de 0 a 1 (`coverage` é a área declarada sobre a área do município).";
@@ -242,7 +244,7 @@ fn sql_text(text: &str) -> String {
 }
 
 /// Indicadores que `with_quality` acrescenta a cada imóvel.
-const QUALITY_KEYS: [&str; 11] = [
+const QUALITY_KEYS: [&str; 12] = [
     "overlap_count",
     "overlap_share",
     "outside_share",
@@ -254,6 +256,7 @@ const QUALITY_KEYS: [&str; 11] = [
     "conservation_category",
     "embargo_count",
     "embargo_share",
+    "public_forest_share",
 ];
 
 /// "toda a área" ou "NN% da área".
@@ -308,7 +311,11 @@ fn protected(row: &Value, check: &'static str, note: &str) -> (&'static str, Str
         let tail = if covered >= 0.01 { format!(", sobre {}.", percent(covered)) } else { " no imóvel.".to_string() };
         extra.push(head + &tail);
     }
-    let alert = (ti >= 0.01 || strict >= 0.01 || embargoes > 0) && check == "ok";
+    let forest = share("public_forest_share");
+    if forest >= 0.01 {
+        extra.push(format!("Sobrepõe floresta pública não destinada (tipo B) em {}.", percent(forest)));
+    }
+    let alert = (ti >= 0.01 || strict >= 0.01 || embargoes > 0 || forest >= 0.01) && check == "ok";
     let mut parts: Vec<String> = if alert { Vec::new() } else { vec![note.to_string()] };
     parts.extend(extra);
     let area = if names.is_empty() { Value::Null } else { json!(names.join("; ")) };
@@ -705,7 +712,8 @@ impl Car {
         description = "Verifica uma lista de códigos de imóvel do CAR (até 200). Para cada um, o que consta na \
                        camada pública e um resultado: ok (ativo, sem notificação pendente), attention (pendente, \
                        notificado sem resposta, com mais de 1% da área sobre terra indígena ou unidade de \
-                       conservação de proteção integral, ou com embargo ambiental ativo do Ibama), blocked (cancelado ou suspenso), not_found, invalid. \
+                       conservação de proteção integral ou floresta pública não destinada, ou com embargo ambiental \
+                       ativo do Ibama), blocked (cancelado ou suspenso), not_found, invalid. \
                        `note` traz o motivo e `protected_area`, os nomes das áreas sobrepostas. A classificação é do \
                        carbr, não uma regra oficial."
     )]
