@@ -56,6 +56,8 @@ inclui imóvel declarado duas vezes e lote dentro de assentamento.
 `strict_protection_share` e `sustainable_use_share`, dentro de unidades de conservação de proteção \
 integral e de uso sustentável (CNUC/MMA). Uso sustentável não é irregularidade: áreas de proteção \
 ambiental (APA) e reservas particulares (RPPN) admitem imóveis privados.
+- Embargos: `embargo_count` é o número de embargos ambientais ativos do Ibama que alcançam o imóvel e \
+`embargo_share`, a parcela da área embargada. Só Ibama; não há embargos estaduais.
 - Tipologia (`tipologia`, em `municipio`): o grupo do município entre cinco, pelo perfil do cadastro \
 (porte dos imóveis, etapa da análise e sobreposição); `typology_label` é o nome do grupo e os \
 indicadores são parcelas de 0 a 1 (`coverage` é a área declarada sobre a área do município).";
@@ -240,7 +242,7 @@ fn sql_text(text: &str) -> String {
 }
 
 /// Indicadores que `with_quality` acrescenta a cada imóvel.
-const QUALITY_KEYS: [&str; 9] = [
+const QUALITY_KEYS: [&str; 11] = [
     "overlap_count",
     "overlap_share",
     "outside_share",
@@ -250,6 +252,8 @@ const QUALITY_KEYS: [&str; 9] = [
     "indigenous_land",
     "conservation_unit",
     "conservation_category",
+    "embargo_count",
+    "embargo_share",
 ];
 
 /// "toda a área" ou "NN% da área".
@@ -293,7 +297,18 @@ fn protected(row: &Value, check: &'static str, note: &str) -> (&'static str, Str
             ));
         }
     }
-    let alert = (ti >= 0.01 || strict >= 0.01) && check == "ok";
+    let embargoes = row["embargo_count"].as_i64().unwrap_or(0);
+    if embargoes > 0 {
+        let covered = share("embargo_share");
+        let head = if embargoes == 1 {
+            "Há 1 embargo ambiental ativo do Ibama".to_string()
+        } else {
+            format!("Há {embargoes} embargos ambientais ativos do Ibama")
+        };
+        let tail = if covered >= 0.01 { format!(", sobre {}.", percent(covered)) } else { " no imóvel.".to_string() };
+        extra.push(head + &tail);
+    }
+    let alert = (ti >= 0.01 || strict >= 0.01 || embargoes > 0) && check == "ok";
     let mut parts: Vec<String> = if alert { Vec::new() } else { vec![note.to_string()] };
     parts.extend(extra);
     let area = if names.is_empty() { Value::Null } else { json!(names.join("; ")) };
@@ -689,10 +704,10 @@ impl Car {
     #[tool(
         description = "Verifica uma lista de códigos de imóvel do CAR (até 200). Para cada um, o que consta na \
                        camada pública e um resultado: ok (ativo, sem notificação pendente), attention (pendente, \
-                       notificado sem resposta, ou com mais de 1% da área sobre terra indígena ou unidade de \
-                       conservação de proteção integral), blocked (cancelado ou suspenso), not_found, invalid. \
+                       notificado sem resposta, com mais de 1% da área sobre terra indígena ou unidade de \
+                       conservação de proteção integral, ou com embargo ambiental ativo do Ibama), blocked (cancelado ou suspenso), not_found, invalid. \
                        `note` traz o motivo e `protected_area`, os nomes das áreas sobrepostas. A classificação é do \
-                       carbr, não uma regra oficial, e não cobre embargos."
+                       carbr, não uma regra oficial."
     )]
     async fn verificar_imoveis(&self, Parameters(p): Parameters<Codigos>) -> Result<CallToolResult, McpError> {
         self.run("verificar_imoveis", move |d| d.verificar(p)).await

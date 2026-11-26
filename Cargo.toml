@@ -1,6 +1,6 @@
 [package]
 name = "carbr-mcp"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 description = "Servidor MCP (HTTP) com as consultas ao Cadastro Ambiental Rural, lendo a publicação do carbr"
 license = "MIT"
