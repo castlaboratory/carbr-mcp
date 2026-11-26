@@ -42,9 +42,9 @@ ferramentas pela entrada e saída padrão: `uvx --from "carbr[mcp]" carbr-mcp`.
 | `resumo` | Totais de imóveis e de área por UF, situação, porte, tipo, etapa e ano de criação |
 | `etapas_da_analise` | Quantos imóveis estão em cada etapa da análise, no país ou em UFs |
 | `municipios` | Os municípios de uma UF, ordenados por imóveis, área, pendentes etc. |
-| `municipio` | Um município em detalhe, com as etapas da análise |
+| `municipio` | Um município em detalhe: etapas da análise, indicadores de qualidade (sobreposição, áreas protegidas, embargos, florestas públicas, Sigef) e o grupo na tipologia |
 | `imoveis_no_ponto` | Os imóveis declarados numa coordenada, com aviso de sobreposição |
-| `verificar_imoveis` | Triagem de até 200 códigos de imóvel por chamada |
+| `verificar_imoveis` | Triagem de até 200 códigos por chamada: situação, terras indígenas, unidades de conservação, embargos do Ibama, florestas públicas e territórios quilombolas do Sigef |
 
 Toda resposta traz a data da publicação (`versao`) e a citação (`fonte`). Não há ferramenta de
 consulta livre: o assistente só faz as perguntas da tabela.
